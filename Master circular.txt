@@ -1,0 +1,224 @@
+#Master circular 
+#3rdbest on 10/10/24
+import fitz
+import re
+import ipywidgets as widgets
+from IPython.display import display
+
+def process_pdf(file_path):
+    doc = fitz.open(file_path)
+    
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        print(f"Processing page {page_num + 1}")
+        
+        footnotes, main_footnote_refs, footnote_markers = extract_footnotes_and_refs(page)
+        print(f"Extracted footnotes: {footnotes}")
+        print(f"Detected main footnote references: {len(main_footnote_refs)}")
+        print(f"Detected footnote markers: {len(footnote_markers)}")
+        
+        draw_footnote_boxes(page, main_footnote_refs + footnote_markers)
+        insert_footnotes(page, footnotes, main_footnote_refs)
+    
+    output_path = file_path.replace('.pdf', '_tarr.pdf')
+    doc.save(output_path)
+    doc.close()
+    
+    print(f"Processed PDF saved as: {output_path}")
+
+def extract_footnotes_and_refs(page):
+    footnotes = {}
+    main_footnote_refs = []
+    footnote_markers = []
+    blocks = page.get_text("dict")["blocks"]
+    
+    in_footnote_section = False
+    current_footnote = ""
+    current_footnote_num = None
+    
+    for block in blocks:
+        block_text = " ".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])])
+        print(f"Processing block: {block_text[:50]}...")
+        
+        for line in block.get("lines", []):
+            line_text = " ".join([span["text"] for span in line.get("spans", [])])
+            print(f"Processing line: {line_text}")
+            
+            line_spans = line.get("spans", [])
+            for span in line_spans:
+                is_footnote_ref = is_smaller_font(span, line_spans) and span["text"].strip().isdigit()
+                
+                if is_footnote_ref:
+                    print(f"Detected potential footnote reference: {span['text']}")
+                    if in_footnote_section:
+                        if current_footnote_num:
+                            footnotes[current_footnote_num] = current_footnote.strip()
+                            print(f"Saved footnote {current_footnote_num}: {current_footnote.strip()[:50]}...")
+                        footnote_markers.append(span)
+                        current_footnote_num = span["text"]
+                        current_footnote = ""
+                    else:
+                        main_footnote_refs.append(span)
+                else:
+                    if in_footnote_section and current_footnote_num:
+                        current_footnote += span["text"] + " "
+        
+        if not in_footnote_section and re.search(r'^\d+\s', block_text):
+            print("Entered footnote section")
+            in_footnote_section = True
+    
+    if current_footnote_num:
+        footnotes[current_footnote_num] = current_footnote.strip()
+        print(f"Saved final footnote {current_footnote_num}: {current_footnote.strip()[:50]}...")
+    
+    if not main_footnote_refs:
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["text"].strip().isdigit():
+                        main_footnote_refs.append(span)
+    
+    return footnotes, main_footnote_refs, footnote_markers
+
+def is_smaller_font(span, line_spans):
+    avg_font_size = sum(s["size"] for s in line_spans) / len(line_spans)
+    return span["size"] < avg_font_size * 0.8
+
+def draw_footnote_boxes(page, footnote_refs):
+    for span in footnote_refs:
+        rect = fitz.Rect(span["bbox"])
+        page.draw_rect(rect, color=(1, 0, 0), width=0.5)
+
+def insert_footnotes(page, footnotes, main_footnote_refs):
+    insertions = []
+    for span in main_footnote_refs:
+        footnote_num = span["text"]
+        if footnote_num in footnotes:
+            insertion_point = find_insertion_point(page, span["bbox"])
+            if insertion_point:
+                insertions.append((insertion_point, f'Footnote {footnote_num}: {footnotes[footnote_num]}', span["bbox"]))
+    
+    insertions.sort(key=lambda x: x[0].y, reverse=True)
+    
+    print(f"Number of insertions to be made: {len(insertions)}")
+    for insertion_point, text, ref_bbox in insertions:
+        try:
+            success = insert_text_with_wrap(page, insertion_point, text, ref_bbox)
+            if success:
+                print(f"Inserted footnote at {insertion_point}")
+            else:
+                print(f"Could not insert footnote at {insertion_point}")
+        except Exception as e:
+            print(f"Error inserting text: {e}")
+
+def find_insertion_point(page, bbox):
+    y = bbox[3] + 5
+    while y < page.rect.height:
+        test_rect = fitz.Rect(0, y, page.rect.width, y + 10)
+        if not page.get_text("text", clip=test_rect).strip():
+            return fitz.Point(bbox[0], y)
+        y += 5
+    return None
+
+def insert_text_with_wrap(page, insertion_point, text, ref_bbox):
+    initial_font_size = 8
+    min_font_size = 6
+    line_spacing = 1.2
+    max_width = page.rect.width - insertion_point.x - 10
+    
+    footnote_section_start = get_footnote_section_start(page)
+    if insertion_point.y >= footnote_section_start:
+        print(f"Cannot insert at {insertion_point}: In footnotes section")
+        return False
+
+    for font_size in range(initial_font_size, min_font_size - 1, -1):
+        lines = split_text_into_lines(text, max_width, font_size)
+        total_height = len(lines) * font_size * line_spacing
+        
+        insert_rect = find_insertion_area(page, ref_bbox, max_width, total_height)
+        if insert_rect:
+            success = try_insert_text(page, insert_rect, lines, font_size, line_spacing)
+            if success:
+                return True
+    
+    print(f"Cannot insert footnote: {text[:20]}... (No suitable space found)")
+    return False
+
+def split_text_into_lines(text, max_width, font_size):
+    words = text.split()
+    lines = []
+    current_line = []
+    current_width = 0
+    
+    for word in words:
+        word_width = fitz.get_text_length(word, fontname="helv", fontsize=font_size)
+        if current_width + word_width <= max_width:
+            current_line.append(word)
+            current_width += word_width + fitz.get_text_length(" ", fontname="helv", fontsize=font_size)
+        else:
+            lines.append(" ".join(current_line))
+            current_line = [word]
+            current_width = word_width
+    
+    if current_line:
+        lines.append(" ".join(current_line))
+    
+    return lines
+
+def find_insertion_area(page, ref_bbox, max_width, required_height):
+    search_radius = 50  # pixels
+    x, y, _, _ = ref_bbox
+    
+    for offset in range(0, search_radius, 5):
+        for direction in [-1, 1]:  # Check both up and down
+            test_y = y + offset * direction
+            test_rect = fitz.Rect(x, test_y, x + max_width, test_y + required_height)
+            
+            if test_rect.y0 < 0 or test_rect.y1 > page.rect.height:
+                continue  # Skip if outside page bounds
+            
+            if not page.get_text("text", clip=test_rect).strip():
+                return test_rect
+    
+    return None
+
+def try_insert_text(page, insert_rect, lines, font_size, line_spacing):
+    for i, line in enumerate(lines):
+        y_offset = i * font_size * line_spacing
+        insert_point = fitz.Point(insert_rect.x0, insert_rect.y0 + y_offset)
+        
+        test_rect = fitz.Rect(insert_point, insert_point + fitz.Point(insert_rect.width, font_size))
+        existing_text = page.get_text("text", clip=test_rect).strip()
+        
+        if existing_text:
+            return False  # Overlap detected, cannot insert
+        
+        page.insert_text(
+            insert_point,
+            line,
+            fontsize=font_size,
+            color=(0, 0, 1)  # Blue color
+        )
+    
+    return True
+
+def get_footnote_section_start(page):
+    blocks = page.get_text("dict")["blocks"]
+    for block in reversed(blocks):
+        block_text = " ".join([span["text"] for line in block.get("lines", []) for span in line.get("spans", [])])
+        if re.match(r'^\d+\s', block_text):
+            return block["bbox"][1]
+    return page.rect.height
+
+# Create file upload widget
+uploader = widgets.FileUpload(accept='.pdf', multiple=False)
+display(uploader)
+
+def on_upload_change(change):
+    if change['type'] == 'change' and change['name'] == 'value':
+        for filename, file_info in change['new'].items():
+            with open(filename, 'wb') as f:
+                f.write(file_info['content'])
+            process_pdf(filename)
+
+uploader.observe(on_upload_change, names='value')
