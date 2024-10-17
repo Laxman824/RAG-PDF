@@ -1,0 +1,38 @@
+import fitz  # PyMuPDF
+import numpy as np
+import cv2
+
+# Open the document
+doc = fitz.open("path_to_your_pdf.pdf")
+
+# Select the page
+page = doc.load_page(0)  # Load the first page
+
+# Get the page as a pixmap
+pix = page.get_pixmap()
+
+# Convert the pixmap to a numpy array
+img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+
+# Convert to grayscale
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+# Use Canny edge detection
+edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+
+# Detect lines using HoughLinesP
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+
+# Draw bounding boxes for horizontal lines
+for line in lines:
+    x1, y1, x2, y2 = line[0]
+    if abs(y1 - y2) < 10:  # Check if line is horizontal
+        cv2.rectangle(img, (x1, y1-10), (x2, y2+10), (0, 255, 0), 2)  # Draw bounding box
+
+# Save the result
+cv2.imwrite("horizontal_lines_detected.png", img)
+
+# Display the result
+cv2.imshow("Horizontal Lines Detected", img)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
