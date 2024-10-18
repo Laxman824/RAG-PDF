@@ -1,0 +1,173 @@
+
+
+import fitz
+import re
+
+def detect_and_draw_footnotes(pdf_path):
+    doc = fitz.open(pdf_path)
+    
+    def draw_rect(page, rect, color):
+        page.draw_rect(rect, color=color, width=1)
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        footnotes = []
+        blocks = page.get_text("dict")["blocks"]
+        
+        current_footnote = None
+        for block in blocks:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                if "spans" not in line:
+                    continue
+                for span in line["spans"]:
+                    text = span["text"].strip()
+                    
+                    # Check if this span is a new footnote number
+                    if re.match(r'^[¹²³⁴⁵\d]+$', text) and span["size"] < 10:  # Adjust size as needed
+                        if current_footnote:
+                            footnotes.append(current_footnote)
+                        current_footnote = {
+                            "number": text,
+                            "text": "",
+                            "num_bbox": fitz.Rect(span["bbox"]),
+                            "text_bbox": None
+                        }
+                    elif current_footnote:
+                        if not current_footnote["text_bbox"]:
+                            current_footnote["text_bbox"] = fitz.Rect(span["bbox"])
+                        else:
+                            current_footnote["text_bbox"].include_rect(span["bbox"])
+                        current_footnote["text"] += " " + text
+
+        # Add the last footnote if exists
+        if current_footnote:
+            footnotes.append(current_footnote)
+
+        # Draw rectangles for footnotes
+        for footnote in footnotes:
+            draw_rect(page, footnote["num_bbox"], (0, 1, 0))  # Green for footnote numbers
+            if footnote["text_bbox"]:
+                draw_rect(page, footnote["text_bbox"], (0, 0, 1))  # Blue for footnote text
+            print(f"Page {page_num + 1}, Footnote {footnote['number']}: {footnote['text'].strip()}")
+
+    output_path = pdf_path.replace('.pdf', '_fin800.pdf')
+    doc.save(output_path)
+    doc.close()
+    print(f"Annotated PDF saved as: {output_path}")
+
+# Usage
+pdf_path = "/content/mas35.pdf"
+detect_and_draw_footnotes(pdf_path)
+
+
+
+
+
+
+
+
+
+##############################
+#FOOTNOtes mapper 
+
+import fitz
+import re
+
+def detect_and_map_footnotes(pdf_path):
+    doc = fitz.open(pdf_path)
+    
+    def draw_rect(page, rect, color):
+        page.draw_rect(rect, color=color, width=1)
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        footnotes = {}
+        references = {}
+        
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                if "spans" not in line:
+                    continue
+                for span in line["spans"]:
+                    text = span["text"].strip()
+                    
+                    # Detect footnote references in main text
+                    if span["size"] == 8.039999961853027 and span["flags"] == 5:
+                        ref_num = text
+                        references[ref_num] = {
+                            "bbox": fitz.Rect(span["bbox"]),
+                            "text": ""
+                        }
+                    
+                    # Detect footnotes
+                    if span["size"] == 6.480000019073486 and span["flags"] == 4:
+                        footnote_num = text
+                        footnotes[footnote_num] = {
+                            "num_bbox": fitz.Rect(span["bbox"]),
+                            "text_bbox": None,
+                            "text": ""
+                        }
+                    elif footnotes and span["size"] == 9.960000038146973 and span["flags"] == 4:
+                        last_footnote = list(footnotes.keys())[-1]
+                        if not footnotes[last_footnote]["text_bbox"]:
+                            footnotes[last_footnote]["text_bbox"] = fitz.Rect(span["bbox"])
+                        else:
+                            footnotes[last_footnote]["text_bbox"].include_rect(span["bbox"])
+                        footnotes[last_footnote]["text"] += " " + text
+
+        # Map footnotes to references and draw rectangles
+        for ref_num, ref_data in references.items():
+            if ref_num in footnotes:
+                footnote = footnotes[ref_num]
+                
+                # Draw rectangles
+                draw_rect(page, ref_data["bbox"], (1, 0, 0))  # Red for reference numbers
+                draw_rect(page, footnote["num_bbox"], (0, 1, 0))  # Green for footnote numbers
+                if footnote["text_bbox"]:
+                    draw_rect(page, footnote["text_bbox"], (0, 0, 1))  # Blue for footnote text
+                
+                # Overwrite footnote text near reference
+                insert_point = fitz.Point(ref_data["bbox"].x1, ref_data["bbox"].y0)
+                page.insert_text(insert_point, f" [{footnote['text'][:50]}...]", 
+                                 fontsize=8, color=(0, 0, 1))
+                
+                print(f"Page {page_num + 1}, Reference {ref_num}: {footnote['text']}")
+
+    output_path = pdf_path.replace('.pdf', '_000.pdf')
+    doc.save(output_path)
+    doc.close()
+    print(f"Annotated and mapped PDF saved as: {output_path}")
+
+# Usage
+pdf_path = "/content/mas16.pdf"
+detect_and_map_footnotes(pdf_path)
+
+
+#######detecting tyhe horizontal line code 
+
+
+DETECTING  THE HORIZONTAL LINES USING EDGE BUT 
+import cv2
+from google.colab.patches import cv2_imshow # Import cv2_imshow
+
+image = cv2.imread('hello.png')
+gray = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15,1))
+detected_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+
+cnts = cv2.findContours(detected_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+
+for c in cnts:
+    cv2.drawContours(image, [c], -1, (36,255,12), 3)
+
+cv2_imshow(thresh) # Use cv2_imshow instead of cv2.imshow
+cv2_imshow(detected_lines) # Use cv2_imshow instead of cv2.imshow
+cv2_imshow(image) # Use cv2_imshow instead of cv2.imshow
